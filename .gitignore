@@ -1,0 +1,9 @@
+outputs/
+**/__pycache__/
+*.egg-info/
+wandb
+tactile_data/
+tactile_data_shear/
+tactile_sim/
+isaacgymenvs/
+rl_games/
