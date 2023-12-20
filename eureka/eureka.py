@@ -187,6 +187,7 @@ def main(cfg):
             indent = " " * 8
             reward_signature = "\n".join([indent + line for line in reward_signature]) #! Structure code
             #! Update reward function
+            #! gt_reward (ground_truth/human) is maintained and these lines are added as extra to also capture gpt reward
             if "def compute_reward(self)" in task_code_string:
                 task_code_string_iter = task_code_string.replace("def compute_reward(self):", "def compute_reward(self):\n" + reward_signature)
             elif "def compute_reward(self, actions)" in task_code_string:
@@ -226,16 +227,19 @@ def main(cfg):
                                             f'max_iterations={cfg.max_iterations}'],
                                             stdout=f, stderr=f)
             block_until_training(rl_filepath, log_status=True, iter_num=iter, response_id=response_id)
+            #! rl_runs is storing a handle to the subprocess. The training suprocess has already been run
+            #! allows interaction with the subprocess later like rl_run.communicate() to retrieve stout/stderr
             rl_runs.append(process)
         
         # Gather RL training results and construct reward reflection
-        code_feedbacks = []
+        code_feedbacks = [] #! pulled results from tensorboard logging 
         contents = []
         successes = []
         reward_correlations = []
         code_paths = []
         
         exec_success = False 
+        #! Looping through the training runs conducted from the most recent round of LLM reward generation
         for response_id, (code_run, rl_run) in enumerate(zip(code_runs, rl_runs)):
             rl_run.communicate()
             rl_filepath = f"env_iter{iter}_response{response_id}.txt"
@@ -251,9 +255,10 @@ def main(cfg):
                 reward_correlations.append(DUMMY_FAILURE)
                 continue
 
-            content = ''
+            content = '' #! All content from this training run
             traceback_msg = filter_traceback(stdout_str)
 
+            #! Check if the RL execution did not throw any errors adn generate policy stats feedback for LLM
             if traceback_msg == '':
                 # If RL execution has no error, provide policy statistics feedback
                 exec_success = True
@@ -266,9 +271,11 @@ def main(cfg):
                 max_iterations = np.array(tensorboard_logs['gt_reward']).shape[0]
                 epoch_freq = max(int(max_iterations // 10), 1)
                 
+                #! Add the policy feedback to the content
                 content += policy_feedback.format(epoch_freq=epoch_freq)
                 
                 # Compute Correlation between Human-Engineered and GPT Rewards
+                #! Human engineered reward and gpt reward are pulled from logs
                 if "gt_reward" in tensorboard_logs and "gpt_reward" in tensorboard_logs:
                     gt_reward = np.array(tensorboard_logs["gt_reward"])
                     gpt_reward = np.array(tensorboard_logs["gpt_reward"])
@@ -282,7 +289,7 @@ def main(cfg):
                         metric_cur_max = max(tensorboard_logs[metric])
                         metric_cur_mean = sum(tensorboard_logs[metric]) / len(tensorboard_logs[metric])
                         if "consecutive_successes" == metric:
-                            successes.append(metric_cur_max)
+                            successes.append(metric_cur_max) #! Main measure of success for generated reward
                         metric_cur_min = min(tensorboard_logs[metric])
                         if metric != "gt_reward" and metric != "gpt_reward":
                             if metric != "consecutive_successes":
@@ -295,7 +302,7 @@ def main(cfg):
                             if "consecutive_successes" not in tensorboard_logs:
                                 content += f"ground-truth score: {metric_cur}, Max: {metric_cur_max:.2f}, Mean: {metric_cur_mean:.2f}, Min: {metric_cur_min:.2f} \n"                    
                 code_feedbacks.append(code_feedback)
-                content += code_feedback  
+                content += code_feedback  #! Add tensorboard logs to content
             else:
                 # Otherwise, provide execution traceback error feedback
                 successes.append(DUMMY_FAILURE)
@@ -315,7 +322,7 @@ def main(cfg):
             continue
 
         # Select the best code sample based on the success rate
-        best_sample_idx = np.argmax(np.array(successes))
+        best_sample_idx = np.argmax(np.array(successes)) #! Best generated reward
         best_content = contents[best_sample_idx]
             
         max_success = successes[best_sample_idx]
@@ -332,6 +339,8 @@ def main(cfg):
         max_successes.append(max_success)
         max_successes_reward_correlation.append(max_success_reward_correlation)
         best_code_paths.append(code_paths[best_sample_idx])
+
+        #! Rest of loop is printing and plotting
 
         logging.info(f"Iteration {iter}: Max Success: {max_success}, Execute Rate: {execute_rate}, Max Success Reward Correlation: {max_success_reward_correlation}")
         logging.info(f"Iteration {iter}: Best Generation ID: {best_sample_idx}")
@@ -369,6 +378,7 @@ def main(cfg):
             json.dump(messages, file, indent=4)
     
     # Evaluate the best reward code many times
+    #! Rerun training several times for evaluation
     if max_reward_code_path is None: 
         logging.info("All iterations of code generation failed, aborting...")
         logging.info("Please double check the output env_iter*_response*.txt files for repeating errors!")
