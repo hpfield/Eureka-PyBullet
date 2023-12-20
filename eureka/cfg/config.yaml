@@ -1,6 +1,6 @@
 defaults:
   - _self_
-  - env: edge_follow-v0
+  - env: cartpole
   - override hydra/launcher: local
   - override hydra/output: local
 

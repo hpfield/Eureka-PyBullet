@@ -12,3 +12,4 @@ class Cartpole(VecTask):
         self.obs_buf[env_ids, 3] = self.dof_vel[env_ids, 1].squeeze()
 
         return self.obs_buf
+    
