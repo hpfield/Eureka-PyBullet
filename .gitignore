@@ -5,5 +5,4 @@ wandb
 tactile_data/
 tactile_data_shear/
 tactile_sim/
-isaacgymenvs/
 rl_games/

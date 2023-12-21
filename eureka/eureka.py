@@ -220,6 +220,8 @@ def main(cfg):
             #! Train.py will look for the output_file. The task_file was never intended for training
             rl_filepath = f"env_iter{iter}_response{response_id}.txt"
             with open(rl_filepath, 'w') as f:
+                #! Command line args replace cfg default values
+                #! e.g. task={task}{suffix} will replace the ${task} variable throughout the configuration
                 process = subprocess.Popen(['python', '-u', f'{ISAAC_ROOT_DIR}/train.py',  
                                             'hydra/output=subprocess',
                                             f'task={task}{suffix}', f'wandb_activate={cfg.use_wandb}',
