@@ -1,4 +1,4 @@
-defaults:
+defaults: #! Defaults mean directories, allowing for cfg.env.task
   - _self_
   - env: cartpole
   - override hydra/launcher: local

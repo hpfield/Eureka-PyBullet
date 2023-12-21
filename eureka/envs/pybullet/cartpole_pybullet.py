@@ -6,86 +6,84 @@ import pybullet_data
 
 class Cartpole:
 
-    def __init__(self, cfg, rl_device):
+    def __init__(self, cfg, rl_device, sim_device, graphics_device_id, headless, virtual_screen_capture, force_render):
         self.cfg = cfg
         self.reset_dist = self.cfg["env"]["resetDist"]
         self.max_push_effort = self.cfg["env"]["maxEffort"]
         self.max_episode_length = 500
-        self.num_envs = self.cfg["env"]["numEnvs"]
-        self.physics_client = p.connect(p.GUI)
+        self.rl_device = rl_device
+        self.sim_device = sim_device
+        self.graphics_device_id = graphics_device_id
+        self.headless = headless
+        self.virtual_screen_capture = virtual_screen_capture
+        self.force_render = force_render
 
+        self.consecutive_successes = torch.zeros(1, dtype=torch.float, device=self.rl_device)
+
+        self.create_sim()
+
+    def create_sim(self):
+        if self.headless:
+            p.connect(p.DIRECT)
+        else:
+            p.connect(p.GUI)
+        p.setGravity(0, 0, -9.81)
         p.setAdditionalSearchPath(pybullet_data.getDataPath())
-        p.setGravity(0, 0, -10)
-        
-        self.cartpole_ids = [self._create_single_env() for _ in range(self.num_envs)]
-        self.consecutive_successes = torch.zeros(1, dtype=torch.float, device=rl_device)
+        plane_id = p.loadURDF("plane.urdf")
 
-    def _create_single_env(self):
-        # This is a placeholder for creating a single environment instance (e.g., loading cartpole URDF)
-        # Replace this with actual environment creation code
-        cartpole_id = p.loadURDF("cartpole.urdf")
-        return cartpole_id
+        asset_root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../assets")
+        asset_file = "urdf/cartpole.urdf"
+        if "asset" in self.cfg["env"]:
+            asset_root = os.path.join(asset_root, self.cfg["env"]["asset"].get("assetRoot", ""))
+            asset_file = self.cfg["env"]["asset"].get("assetFileName", asset_file)
+        asset_path = os.path.join(asset_root, asset_file)
 
-    def compute_reward(self, pole_angle, pole_vel, cart_vel, cart_pos):
-        # This function can remain mostly unchanged, just adapted for PyBullet
-        # Extract necessary data from PyBullet and compute reward as before
-        pass  # Add your code here
+        self.cartpole_id = p.loadURDF(asset_path, basePosition=[0, 0, 1])
 
     def compute_observations(self):
-        # Initialize an empty buffer for observations
-        obs_buf = np.zeros((self.num_envs, 4))  # Assuming 4 observations: cart_pos, cart_vel, pole_angle, pole_vel
+        pos, orn = p.getBasePositionAndOrientation(self.cartpole_id)
+        linear_vel, angular_vel = p.getBaseVelocity(self.cartpole_id)
+        joint_states = p.getJointStates(self.cartpole_id, range(p.getNumJoints(self.cartpole_id)))
 
-        for i, cartpole_id in enumerate(self.cartpole_ids):
-            # Get cart position and orientation
-            cart_pos, cart_orn = p.getBasePositionAndOrientation(cartpole_id)
-            # Get cart linear and angular velocity
-            cart_vel, cart_angular_vel = p.getBaseVelocity(cartpole_id)
+        positions = [j[0] for j in joint_states]
+        velocities = [j[1] for j in joint_states]
 
-            # Assuming the pole is a link of the cartpole, not a separate body
-            # Get pole state - this depends on how your cartpole is defined in URDF
-            # Here, we assume link index 1 corresponds to the pole
-            pole_state = p.getLinkState(cartpole_id, linkIndex=1, computeLinkVelocity=True)
-            pole_pos, pole_orn = pole_state[0], pole_state[1]
-            pole_vel, pole_angular_vel = pole_state[6], pole_state[7]
+        obs = np.array(positions + velocities + list(linear_vel) + list(angular_vel))
+        return torch.tensor(obs, dtype=torch.float32, device=self.rl_device)
 
-            # Compute the observations
-            # Note: You'll need to adapt these calculations based on your specific cartpole model
-            # This is just a generic example
-            obs_buf[i, 0] = cart_pos[0]  # Cart position (x-axis)
-            obs_buf[i, 1] = cart_vel[0]  # Cart velocity (x-axis)
-            # Calculate pole angle - this will depend on how your pole is oriented in the URDF
-            # Here's an example assuming the pole rotates about the x-axis
-            pole_angle = np.arctan2(pole_orn[1], pole_orn[0])
-            obs_buf[i, 2] = pole_angle
-            obs_buf[i, 3] = pole_angular_vel[0]  # Pole angular velocity (about x-axis)
+    def compute_reward(self, observations):
+        # Define your reward function based on observations
+        # Example:
+        pole_angle = observations[2]
+        reward = 1.0 - pole_angle ** 2
+        return reward
 
-        return obs_buf
+    def reset(self):
+        p.resetBasePositionAndOrientation(self.cartpole_id, [0, 0, 1], [0, 0, 0, 1])
+        for i in range(p.getNumJoints(self.cartpole_id)):
+            p.resetJointState(self.cartpole_id, i, 0, 0)
 
+    def step(self, action):
+        # Apply action
+        p.setJointMotorControl2(self.cartpole_id, 0, p.TORQUE_CONTROL, force=action * self.max_push_effort)
+        
+        # Step simulation
+        p.stepSimulation()
 
-    def reset_idx(self, env_ids):
-        # Reset specific environments based on env_ids
-        pass  # Add your code here
+        # Compute observations and reward
+        observations = self.compute_observations()
+        reward = self.compute_reward(observations)
 
-    def step_simulation(self, actions):
-        # Apply actions and step the simulation
-        pass  # Add your code here
+        return observations, reward
 
-# The compute_success function can remain as is
-@torch.jit.script
-def compute_success(pole_angle, pole_vel, cart_vel, cart_pos,
-                    reset_dist, reset_buf, consecutive_successes, progress_buf, max_episode_length):
+# Example usage
+cfg = {
+    "env": {
+        "resetDist": 1.0,
+        "maxEffort": 10.0,
+    }
+}
 
-    reward = 1.0 - pole_angle * pole_angle - 0.01 * torch.abs(cart_vel) - 0.005 * torch.abs(pole_vel)
-
-    reward = torch.where(torch.abs(cart_pos) > reset_dist, torch.ones_like(reward) * -2.0, reward)
-    reward = torch.where(torch.abs(pole_angle) > np.pi / 2, torch.ones_like(reward) * -2.0, reward)
-
-    reset = torch.where(torch.abs(cart_pos) > reset_dist, torch.ones_like(reset_buf), reset_buf)
-    reset = torch.where(torch.abs(pole_angle) > np.pi / 2, torch.ones_like(reset_buf), reset)
-    reset = torch.where(progress_buf >= max_episode_length - 1, torch.ones_like(reset_buf), reset)
-
-    if reset.sum() > 0:
-        consecutive_successes = (progress_buf.float() * reset).sum() / reset.sum()
-    else:
-        consecutive_successes = torch.zeros_like(consecutive_successes).mean()
-    return reward, reset, consecutive_successes
+cartpole = Cartpole(cfg, "cpu", "cpu", 0, True, False, False)
+observations = cartpole.compute_observations()
+reward = cartpole.compute_reward(observations)

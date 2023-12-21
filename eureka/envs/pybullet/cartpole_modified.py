@@ -3,7 +3,7 @@ import numpy as np
 import os
 import torch
 
-from isaacgym import gymutil, gymtorch, gymapi
+from pybullet import gymutil, gymtorch, gymapi
 from .base.vec_task import VecTask
 
 class Cartpole(VecTask):
@@ -89,8 +89,7 @@ class Cartpole(VecTask):
             self.cartpole_handles.append(cartpole_handle)
 
     def compute_reward(self):
-        #! Obs_buf probably storing obs of all envs simultaneously 
-        pole_angle = self.obs_buf[:, 2] 
+        pole_angle = self.obs_buf[:, 2]
         pole_vel = self.obs_buf[:, 3]
         cart_vel = self.obs_buf[:, 1]
         cart_pos = self.obs_buf[:, 0]
@@ -147,9 +146,7 @@ class Cartpole(VecTask):
         self.compute_reward()
 
 
-#! Computes the reward, whether the env needs to be reset, and updates the consecutive successes
-#! The fact that everything is a tensor means that the returned reward, reset and consecutive_successes are also tensors
-#! This is why they are averaged individually. They do not need to be averaged in pybullet
+
 @torch.jit.script
 def compute_success(pole_angle, pole_vel, cart_vel, cart_pos,
                             reset_dist, reset_buf, consecutive_successes, progress_buf, max_episode_length):

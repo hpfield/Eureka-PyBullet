@@ -1,23 +1,27 @@
 import pybullet as p
 import numpy as np
-import torch
 
 class CartpolePyBullet:
 
     def __init__(self):
 
         # Environment parameters
-        #! Some params were not clear in isaacgym, but matched ones that could be read
-        self.reset_dist = 2.4 
-        self.max_push_force = 10.0  
+        #! Taking param vals from isaacgymenvs/isaacgymenvs/cfg/task/Cartpole.yaml
+        self.reset_dist = 3.0
+        self.max_push_effort = 400.0
         self.max_episode_length = 500
 
+        #! New timestep param
+        self.time_step = 0.01
+
         # PyBullet setup
-        self.physicsClient = p.connect(p.DIRECT)
-        p.setGravity(0,0,-9.8)
+        self.client_id = p.connect(p.DIRECT) #! Functional equivalent of create_sim
+        p.setGravity(0,0,-9.81, physicsClientId=self.client_id)
+        p.setTimeStep(self.time_step, physicsClientId=self.client_id)
 
         # Create cartpole #! Joint info handles are for later use
-        self.cartpole = p.loadURDF("cartpole.urdf")  
+        #! For now, decided not to load a plane.urdf as don't have one
+        self.cartpole = p.loadURDF("cartpole.urdf", [0,0,0], physicsClientId=self.client_id)  #! Copied file from isaac, placed in this dir
         self.pole = p.getJointInfo(self.cartpole, 1)[0]
         self.cart_joint = p.getJointInfo(self.cartpole, 0)[0] 
 
@@ -29,9 +33,9 @@ class CartpolePyBullet:
         p.setJointMotorControl2(self.cartpole, self.cart_joint_index, p.VELOCITY_CONTROL, force=0)
         p.setJointMotorControl2(self.cartpole, self.pole_joint_index, p.VELOCITY_CONTROL, force=0)
 
-        # Additional metrics to match isaacgym
-        self.consecutive_successes = 0
-        self.progress_buf = 0
+        # Additional metrics 
+        self.consecutive_successes = np.zeros(1, dtype=float)
+        self.progress = 0
 
     def get_observation(self):
         cart_pos, cart_vel,_ = p.getJointState(self.cartpole, self.cart_joint_index)[:3]
@@ -60,23 +64,26 @@ class CartpolePyBullet:
 
     # Reward function from isaacgym reference
     def get_reward(self, obs):
+        # Extract observations
+        pole_angle = obs[2]  
+        pole_vel = obs[3]   
+        cart_vel = obs[1]    
+        cart_pos = obs[0]    
 
-        pole_angle = obs[2] 
-        pole_vel = obs[3]
-        cart_vel = obs[1]
-        cart_pos = obs[0]
+        # Increment the progress of the episode
+        self.progress += 1 
 
-        self.gt_rew_buf, self.reset_buf, self.consecutive_successes, self.progress_buf = compute_success(
-             pole_angle, pole_vel, cart_vel, cart_pos,
-             self.reset_dist, self.reset_buf, self.consecutive_successes, self.progress_buf, self.max_episode_length
+        # Use compute_success to compute the reward, reset condition, and success status
+        reward, reset, success = compute_success(
+            pole_angle, pole_vel, cart_vel, cart_pos,
+            self.reset_dist, self.progress, self.max_episode_length
         )
 
-        done = bool(abs(cart_pos) > self.reset_dist)
-        done = done or bool(abs(pole_angle) > .2) 
+        # If the episode is reset, reset the progress counter
+        if reset:
+            self.progress = 0
 
-        #! Reward is not returned in isaacgym. The important thing is how the metrics are logged in training.
-        #! Keeping the process in line with pybullet standards might make the training easier later
-        return self.gt_rew_buf, done, self.consecutive_successes, self.progress_buf   
+        return reward, reset, success
 
     def reset(self):
         # Reset pybullet simulation
@@ -84,22 +91,21 @@ class CartpolePyBullet:
         p.setGravity(0,0,-9.8)
         return self.get_observation()
     
-@torch.jit.script
-def compute_success(pole_angle, pole_vel, cart_vel, cart_pos,
-                            reset_dist, reset_buf, consecutive_successes, progress_buf, max_episode_length):
-    # type: (Tensor, Tensor, Tensor, Tensor, float, Tensor, Tensor, Tensor, float) -> Tuple[Tensor, Tensor, Tensor]
 
-    reward = 1.0 - pole_angle * pole_angle - 0.01 * torch.abs(cart_vel) - 0.005 * torch.abs(pole_vel)
+def compute_success(pole_angle, pole_vel, cart_vel, cart_pos, reset_dist, progress, max_episode_length):
+    # Calculate the reward
+    reward = 1.0 - pole_angle**2 - 0.01 * abs(cart_vel) - 0.005 * abs(pole_vel)
 
-    reward = torch.where(torch.abs(cart_pos) > reset_dist, torch.ones_like(reward) * -2.0, reward)
-    reward = torch.where(torch.abs(pole_angle) > np.pi / 2, torch.ones_like(reward) * -2.0, reward)
+    # Check for failure condition
+    failure = abs(cart_pos) > reset_dist or abs(pole_angle) > np.pi / 2
+    if failure:
+        reward -= 2.0
 
-    reset = torch.where(torch.abs(cart_pos) > reset_dist, torch.ones_like(reset_buf), reset_buf)
-    reset = torch.where(torch.abs(pole_angle) > np.pi / 2, torch.ones_like(reset_buf), reset)
-    reset = torch.where(progress_buf >= max_episode_length - 1, torch.ones_like(reset_buf), reset)
+    # Determine if the episode should be reset (either failure or max length reached)
+    reset = failure or progress >= max_episode_length
 
-    if reset.sum() > 0:
-        consecutive_successes = (progress_buf.float() * reset).sum() / reset.sum()
-    else:
-        consecutive_successes = torch.zeros_like(consecutive_successes).mean()
-    return reward, reset, consecutive_successes
+    # Determine if the attempt was successful
+    # A success could be defined as reaching max_episode_length without failure
+    success = progress >= max_episode_length and not failure
+
+    return reward, reset, success
