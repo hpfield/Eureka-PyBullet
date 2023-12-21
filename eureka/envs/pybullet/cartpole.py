@@ -1,7 +1,7 @@
 import pybullet as p
 import numpy as np
 
-class CartpolePyBullet:
+class Cartpole:
 
     def __init__(self):
 
@@ -34,7 +34,7 @@ class CartpolePyBullet:
         p.setJointMotorControl2(self.cartpole, self.pole_joint_index, p.VELOCITY_CONTROL, force=0)
 
         # Additional metrics 
-        self.consecutive_successes = np.zeros(1, dtype=float)
+        self.success = 0
         self.progress = 0
 
     def get_observation(self):
@@ -44,23 +44,26 @@ class CartpolePyBullet:
         observation = [cart_pos, cart_vel, pole_angle, pole_vel]
         return np.array(observation)
 
-    def apply_action(self, action): 
-        p.setJointMotorControl2(self.cartpole, self.cart_joint_index, p.TORQUE_CONTROL, force=action) 
-
     def step(self, action):
+        # Pre-physics step: Apply the action to the environment
+        # Assuming 'action' is a force or velocity to be applied to the cart
+        p.setJointMotorControl2(self.cartpole, self.cart_joint_index, 
+                                controlMode=p.VELOCITY_CONTROL,
+                                targetVelocity=action,
+                                force=self.max_push_effort,
+                                physicsClientId=self.client_id)
+
+        # Perform one step of the simulation
+        p.stepSimulation(physicsClientId=self.client_id)
+
+        # Post-physics step: Update environment state, compute reward, etc.
+        obs = self.get_observation()
+        reward, done, success = self.get_reward(obs)
         
-        # Apply action force
-        self.apply_action(action[0] * self.max_push_force)
+        # Update additional metrics or state variables if needed
+        # ...
 
-        # Get observation and reward
-        obs = self.get_observation()  
-        reward, done, self.consecutive_successes, self.progress_buf = self.get_reward(obs)
-
-        # Simulate one step
-        p.stepSimulation()
-
-        # Return step info
-        return obs, reward, done
+        return obs, reward, done, success
 
     # Reward function from isaacgym reference
     def get_reward(self, obs):
@@ -73,6 +76,9 @@ class CartpolePyBullet:
         # Increment the progress of the episode
         self.progress += 1 
 
+        #! To determine whether to store these as they are or with the self. style, will depend on 
+        #! how the parameters are read and stored in other parts of the program
+        #! Determine this after the environment file is written
         # Use compute_success to compute the reward, reset condition, and success status
         reward, reset, success = compute_success(
             pole_angle, pole_vel, cart_vel, cart_pos,
@@ -87,9 +93,30 @@ class CartpolePyBullet:
 
     def reset(self):
         # Reset pybullet simulation
-        p.resetSimulation(self.physicsClient)
-        p.setGravity(0,0,-9.8)
+        p.resetSimulation(self.client_id)
+        
+        # Set gravity for the new simulation
+        p.setGravity(0, 0, -9.8, physicsClientId=self.client_id)
+
+        # Reload the cartpole URDF and reconfigure settings
+        self.cartpole = p.loadURDF("cartpole.urdf", [0, 0, 0], physicsClientId=self.client_id)
+        # (Reapply any other necessary settings like joint motor controls)
+
+        # Reset joint indices if necessary
+        self.cart_joint_index = 0
+        self.pole_joint_index = 1
+
+        # Reset joint control mode (if required)
+        p.setJointMotorControl2(self.cartpole, self.cart_joint_index, p.VELOCITY_CONTROL, force=0, physicsClientId=self.client_id)
+        p.setJointMotorControl2(self.cartpole, self.pole_joint_index, p.VELOCITY_CONTROL, force=0, physicsClientId=self.client_id)
+
+        # Reset additional metrics 
+        self.progress = 0
+        self.consecutive_successes = 0
+
+        # Return the initial observation
         return self.get_observation()
+
     
 
 def compute_success(pole_angle, pole_vel, cart_vel, cart_pos, reset_dist, progress, max_episode_length):
