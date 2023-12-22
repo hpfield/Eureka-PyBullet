@@ -89,9 +89,10 @@ def launch_rlg_hydra(cfg: DictConfig):
 
 
     time_str = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    run_name = f"{cfg.wandb_name}_{time_str}"
+    run_name = f"{cfg.wandb_name}_{time_str}" #! wandb configuration kept in hydra
 
     # ensure checkpoints can be specified as relative paths
+    #! No checkpoint specified by default
     if cfg.checkpoint:
         cfg.checkpoint = to_absolute_path(cfg.checkpoint)
 
@@ -99,19 +100,23 @@ def launch_rlg_hydra(cfg: DictConfig):
     # print_dict(cfg_dict)
 
     # set numpy formatting for printing only
-    set_np_formatting()
+    set_np_formatting() #! Enhance readability of numpy array outputs during debugging
 
     # sets seed. if seed is -1 will pick a random one
-    rank = int(os.getenv("LOCAL_RANK", "0"))
+    #! LOCAL_RANK is an environment variable typically used in multi-GPU setups to identify the ID of each process
+    rank = int(os.getenv("LOCAL_RANK", "0")) 
+    #! Adjusting the seed based on the rank ensures that each process uses a different random seed
     cfg.seed += rank
+    #! if cfg.seed is -1, a random seed will be generated
     cfg.seed = set_seed(cfg.seed, torch_deterministic=cfg.torch_deterministic)
+    #! If the cfg calls for multi-gpu, this instruction is passed into another part of the cfg manually for training
     cfg.train.params.config.multi_gpu = cfg.multi_gpu
 
 
-    def create_isaacgym_env(**kwargs):
+    def create_isaacgym_env(**kwargs): #! **kwargs allows for the acceptance of an arbitrary number of keywork args
         #! This is where the new reward is used, because isaacgym makes the env on the fly
         #! it will also incorporate the new reward fn, looking for the output file from eureka.py
-        envs = isaacgymenvs.make(
+        envs = isaacgymenvs.make( 
             cfg.seed, 
             cfg.task_name, 
             cfg.task.env.numEnvs, 
@@ -122,16 +127,17 @@ def launch_rlg_hydra(cfg: DictConfig):
             cfg.multi_gpu,
             cfg.capture_video,
             cfg.force_render,
-            cfg,
+            cfg, #! Passing the whole cfg allows the make fn to access any additional params needed
             **kwargs,
         )
+        #! Option to capture video
         if cfg.capture_video:
-            envs.is_vector_env = True
+            envs.is_vector_env = True #! env supports vectorized operations (not for pybullet)
             if cfg.test:
                 envs = gym.wrappers.RecordVideo(
                     envs,
                     f"videos/{run_name}",
-                    step_trigger=lambda step: (step % cfg.capture_video_freq == 0),
+                    step_trigger=lambda step: (step % cfg.capture_video_freq == 0), #! Configure at which steps video recording should occur
                     video_length=cfg.capture_video_len,
                 )
             else:
@@ -143,6 +149,8 @@ def launch_rlg_hydra(cfg: DictConfig):
                 )
         return envs
 
+    #! This is registering a new environment configuration. It does not actually call create_isaacgym_env()
+    #! Telling the framework "here's how to create an environment of type 'rlgpu'"
     env_configurations.register('rlgpu', {
         'vecenv_type': 'RLGPU',
         'env_creator': lambda **kwargs: create_isaacgym_env(**kwargs),
@@ -150,25 +158,40 @@ def launch_rlg_hydra(cfg: DictConfig):
     
     # Save the environment code!
     try:
+        #! Searches for a local version of the env
+        #! From a first glance, this has minor differences to the other cartpole env
+        #! e.g. the gt_reward is not saved
         output_file = f"{ROOT_DIR}/tasks/{cfg.task.env.env_name.lower()}.py"
+        #! Copy the contents of the existing file to a new file to standardise the file name for future operations
         shutil.copy(output_file, f"env.py")
     except:
         import re
-        def camel_to_snake(name):
+        def camel_to_snake(name): #! Convert from camelCase to snake_case
             s1 = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', name)
             return re.sub('([a-z0-9])([A-Z])', r'\1_\2', s1).lower()
         output_file = f"{ROOT_DIR}/tasks/{camel_to_snake(cfg.task.name)}.py"
 
         shutil.copy(output_file, f"env.py")
 
+    #! add a new type of env to the system
+    #! lambda function serves as a factory for creating RLGPUEnvs
+    #! RLGPUEnv is a class representing a type of env optimised for running on GPUs
     vecenv.register('RLGPU', lambda config_name, num_actors, **kwargs: RLGPUEnv(config_name, num_actors, **kwargs))
 
-    rlg_config_dict = omegaconf_to_dict(cfg.train)
+    rlg_config_dict = omegaconf_to_dict(cfg.train) #! Convert cfg.train to a standard python dictionary
+    #! fn defined at top of file
+    #! used to modify the configuration variables before training
     rlg_config_dict = preprocess_train_config(cfg, rlg_config_dict)
 
-    # register new AMP network builder and agent
+    # register new AMP network builder and agent #! Adaptive Motion Prediction
+    #! The resulting runner object is what conducts the training
+    #! The runner is filled with factories to make algorithms, players, models and networks
+    #! The components needed for AMP based continuous control training
+    #! The factories are only used to create instances once runner.run() is called
     def build_runner(algo_observer):
         runner = Runner(algo_observer)
+        #! Algo factory creates algorithm agents
+        #! register_builder() registers a method for creating agents of type 'amp_continuous'
         runner.algo_factory.register_builder('amp_continuous', lambda **kwargs : amp_continuous.AMPAgent(**kwargs))
         runner.player_factory.register_builder('amp_continuous', lambda **kwargs : amp_players.AMPPlayerContinuous(**kwargs))
         model_builder.register_model('continuous_amp', lambda network, **kwargs : amp_models.ModelAMPContinuous(network))
@@ -176,8 +199,9 @@ def launch_rlg_hydra(cfg: DictConfig):
 
         return runner
 
-    observers = [RLGPUAlgoObserver()]
+    observers = [RLGPUAlgoObserver()] #! A specific observer for GPU-based training
 
+    #! Specific weights and biases observer is added for recording training
     if cfg.wandb_activate and rank ==0 :
 
         import wandb
@@ -192,6 +216,7 @@ def launch_rlg_hydra(cfg: DictConfig):
     print("Network Directory:", Path.cwd() / experiment_dir / "nn")
     print("Tensorboard Directory:", Path.cwd() / experiment_dir / "summaries")
 
+    #! Setup experiment directory for logging and dump configuration into yaml file there
     os.makedirs(experiment_dir, exist_ok=True)
     with open(os.path.join(experiment_dir, 'config.yaml'), 'w') as f:
         f.write(OmegaConf.to_yaml(cfg))
@@ -200,9 +225,12 @@ def launch_rlg_hydra(cfg: DictConfig):
     # convert CLI arguments into dictionary
     # create runner and set the settings
     runner = build_runner(MultiObserver(observers))
-    runner.load(rlg_config_dict)
-    runner.reset()
+    runner.load(rlg_config_dict) #! Runner loads training configuration
+    runner.reset() #! Initialise the runner in prep for training
 
+    #! Execute the training
+    #! runner.run() executes the factories registered in the build_runner function
+    #! Would need to examine the run() fn to find what values are passed in to **kwargs
     statistics = runner.run({
         'train': not cfg.test,
         'play': cfg.test,
@@ -211,7 +239,7 @@ def launch_rlg_hydra(cfg: DictConfig):
     })
 
     if cfg.wandb_activate and rank == 0:
-        wandb.finish()
+        wandb.finish() #! Properly finish the wandb session
         
 if __name__ == "__main__":
     launch_rlg_hydra()
