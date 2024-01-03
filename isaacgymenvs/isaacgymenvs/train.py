@@ -93,6 +93,7 @@ def launch_rlg_hydra(cfg: DictConfig):
 
     # ensure checkpoints can be specified as relative paths
     #! No checkpoint specified by default
+    #! Checkpoint is a saved state of a trained model at a particular point during training
     if cfg.checkpoint:
         cfg.checkpoint = to_absolute_path(cfg.checkpoint)
 
@@ -113,7 +114,7 @@ def launch_rlg_hydra(cfg: DictConfig):
     cfg.train.params.config.multi_gpu = cfg.multi_gpu
 
 
-    def create_isaacgym_env(**kwargs): #! **kwargs allows for the acceptance of an arbitrary number of keywork args
+    def create_isaacgym_env(**kwargs): #! **kwargs allows for the acceptance of an arbitrary number of keyword args
         #! This is where the new reward is used, because isaacgym makes the env on the fly
         #! it will also incorporate the new reward fn, looking for the output file from eureka.py
         envs = isaacgymenvs.make( 
