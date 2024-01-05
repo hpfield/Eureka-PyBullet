@@ -10,7 +10,7 @@ class ObjectFactory:
         self._builders = builders
         
     def create(self, name, **kwargs):
-        builder = self._builders.get(name)
+        builder = self._builders.get(name) #! Retrieve the relevant builder function
         if not builder:
             raise ValueError(name)
-        return builder(**kwargs)
+        return builder(**kwargs) #! Construct the relevant class

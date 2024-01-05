@@ -54,6 +54,7 @@ class Runner:
     def reset(self):
         pass
 
+    #! Runner loads training configuration into self.params
     def load_config(self, params):
         self.seed = params.get('seed', None)
         if self.seed is None:

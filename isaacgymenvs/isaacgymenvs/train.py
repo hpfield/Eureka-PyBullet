@@ -195,6 +195,7 @@ def launch_rlg_hydra(cfg: DictConfig):
         #! register_builder() registers a method for creating agents of type 'amp_continuous'
         runner.algo_factory.register_builder('amp_continuous', lambda **kwargs : amp_continuous.AMPAgent(**kwargs))
         runner.player_factory.register_builder('amp_continuous', lambda **kwargs : amp_players.AMPPlayerContinuous(**kwargs))
+        #! Can't see where the model_builder stuff is used anywhere else in the program. Probably not important
         model_builder.register_model('continuous_amp', lambda network, **kwargs : amp_models.ModelAMPContinuous(network))
         model_builder.register_network('amp', lambda **kwargs : amp_network_builder.AMPBuilder())
 
