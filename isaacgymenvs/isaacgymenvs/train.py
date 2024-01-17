@@ -182,7 +182,7 @@ def launch_rlg_hydra(cfg: DictConfig):
     rlg_config_dict = omegaconf_to_dict(cfg.train) #! Convert cfg.train to a standard python dictionary
     #! fn defined at top of file
     #! used to modify the configuration variables before training
-    rlg_config_dict = preprocess_train_config(cfg, rlg_config_dict)
+    rlg_config_dict = preprocess_train_config(cfg, rlg_config_dict) #! Possibly where the config takes the shape we see in the env file
 
     # register new AMP network builder and agent #! Adaptive Motion Prediction
     #! The resulting runner object is what conducts the training
