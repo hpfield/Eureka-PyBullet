@@ -190,6 +190,7 @@ class VecTask(Env):
             force_render: Set to True to always force rendering in the steps (if the `control_freq_inv` is greater than 1 we suggest stting this arg to True)
         """
         # super().__init__(config, rl_device, sim_device, graphics_device_id, headless, use_dict_obs)
+        #! Call to super just sets self.something variables, no connection to gym
         super().__init__(config, rl_device, sim_device, graphics_device_id, headless)
         self.virtual_screen_capture = virtual_screen_capture
         self.virtual_display = None
