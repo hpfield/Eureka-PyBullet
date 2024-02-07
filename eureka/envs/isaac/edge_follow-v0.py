@@ -34,6 +34,7 @@ class EdgeFollow(VecTask):
         robot_arm_params["type"] = "ur5"
         robot_arm_params["tcp_link_name"] = "tcp_link"
         robot_arm_params["rest_pose"] = np.array([0.0, 1.374, 0.871,  1.484, -2.758, 4.940, 2.2409, 7.165, 0.0, 0.0, 0.0, 0.0, 0.0])
+        self.default_robot_rest_pose = torch.tensor(robot_arm_params["rest_pose"], dtype=torch.float, device=self.device) # Matching data conversion from FrankaCabinet
         cfg["robot_arm_params"] = robot_arm_params
 
         tactile_sensor_params = {}
@@ -50,8 +51,7 @@ class EdgeFollow(VecTask):
 
         super().__init__(config=self.cfg, rl_device=rl_device, sim_device=sim_device, graphics_device_id=graphics_device_id, headless=headless, virtual_screen_capture=virtual_screen_capture, force_render=force_render)
 
-        #! This will likely need to be moved into create_sim
-        self.embodiment = VisuoTactileArmEmbodiment()
+        
 
     # From BaseTactileEnv, using the calculation for _velocity_action_repeat
     def calculate_controlFrequencyInv(self):
