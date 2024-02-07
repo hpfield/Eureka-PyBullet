@@ -17,14 +17,14 @@ class EdgeFollow(VecTask):
         cfg["physics_engine"] = "physx"
         env = {}
         env["numEnvs"] = 5 # Alter as needed
-        env["numObservations"] = 0 #! Requires embodiment in PyBullet (customisable param)
+        env["numObservations"] = 0 #! Requires embodiment in PyBullet (customisable param), Observation space dependant on tactile sensor
         env["numActions"] = 2 # From PyBullet variables dump
 
         #Optional env params
         env["numAgents"] = 1 # Default
         env["numStates"] = None # Don't think is required
         env["controlFrequencyInv"] = self.calculate_controlFrequencyInv() # Taken from BaeTactileEnv
-        env["clipObservations"] = None #! Pybullet obs space depends on command line arg
+        env["clipObservations"] = None #! Obs space dependant on tactile sensor setup
         env["clipActions"] = None  #! PyBullet has Min/Max actions at -1.0 and 1.0
         env["enableCameraSensors"] = True # Assumed True
         cfg["env"] = env
@@ -48,11 +48,45 @@ class EdgeFollow(VecTask):
 
         # Finish config
         self.cfg = cfg
+        self.action_scale = self.cfg["env"]["actionScale"] # Taen from FrankaCabinet
+
+        self.dt = 1/60 # Taken from FrankaCabinet
 
         super().__init__(config=self.cfg, rl_device=rl_device, sim_device=sim_device, graphics_device_id=graphics_device_id, headless=headless, virtual_screen_capture=virtual_screen_capture, force_render=force_render)
 
-        
+        actor_root_state_tensor = self.gym.acquire_actor_root_state_tensor(self.sim)
+        dof_state_tensor = self.gym.acquire_dof_state_tensor(self.sim)
+        rigid_body_tensor = self.gym.acquire_rigid_body_state_tensor(self.sim)
 
+        self.gym.refresh_actor_root_state_tensor(self.sim)
+        self.gym.refresh_dof_state_tensor(self.sim)
+        self.gym.refresh_rigid_body_state_tensor(self.sim)
+
+        # Initialise robot state
+        self.dof_state = gymtorch.wrap_tensor(dof_state_tensor)
+        self.robot_dof_state = self.dof_state.view(self.num_envs, -1, 2)[:, :self.num_dofs] #.view() reshapes fod dof_state tensor - the list slicing to follow slices it to focus only on the DOFs belonging to the ur5 robot
+        self.robot_dof_pos = self.robot_dof_state[..., 0]
+        self.robot_dof_vel = self.robot_dof_state[..., 1]
+
+        # self.num_envs is dim1, -1 means auto calc size of dim 2, 13 represents the size of ator root body state
+        # 13 because Pos = 3; Orn = 4, Lin Vel = 3, Ang vel = 3
+        self.rigid_body_states = gymtorch.wrap_tensor(rigid_body_tensor).view(self.num_envs, -1, 13) 
+        self.num_bodies = self.rigid_body_states.shape[1]
+
+        self.root_state_tensor = gymtorch.wrap_tensor(actor_root_state_tensor).view(self.num_envs, -1, 13) 
+
+        # Calculate and store metrics and constants that are necessary for the operation
+        self.num_dofs = self.gym.get_sim_dof_count(self.sim) // self.num_envs
+        self.robot_dof_targets = torch.zeros((self.num_envs, self.num_dofs), dtype=torch.float, device=self.device)
+
+        # Setup success storage
+        self.successes = torch.zeros(self.num_envs, dtype=torch.float, device=self.device)
+        self.consecutive_successes = torch.zeros(1, dtype=torch.float, device=self.device)
+
+        # Initialise indexing for efficiently handling multiple envs and apply initial setup to all environments
+        self.reset_idx(torch.arange(self.num_envs, device=self.device))
+
+        
     # From BaseTactileEnv, using the calculation for _velocity_action_repeat
     def calculate_controlFrequencyInv(self):
         sim_time_step = 1.0 / 240.0
@@ -165,8 +199,12 @@ class EdgeFollow(VecTask):
             robot_dof_props['driveMode'][i] = gymapi.DOF_MODE_POS
             robot_dof_props['stiffness'][i] = dof_stiffness[i]
             robot_dof_props['damping'][i] = dof_damping[i]
-        
-        #! Franka implements some features to do with speed scales and effort. Not sure if needed here.
+
+        self.robot_dof_lower_limits = to_torch(robot_dof_props['lower'], dtype=torch.float, device=self.device)
+        self.robot_dof_upper_limits = to_torch(robot_dof_props['upper'], dtype=torch.float, device=self.device)
+        self.robot_dof_speed_scales = torch.ones_like(self.robot_dof_lower_limits, device=self.device)
+        self.robot_dof_speed_scales[[7, 8]] = 0.1 #! Unsure, taken from FrankaCabinet
+        #! Franka implements some features to do with dof props 'effort'. Not sure if needed here.
 
         # Define starting poses for assets 
         robot_start_pose = gymapi.Transform()  # Set the position and orientation
@@ -212,6 +250,31 @@ class EdgeFollow(VecTask):
             # Add goal indicator
             goal_indicator_actor = self.gym.create_actor(env_ptr, goal_indicator_asset, goal_indicator_start_pose, "goal_indicator", i, 0, 0)
             self.goal_indicators.append(goal_indicator_actor)
+        
+        # Get handle for the tcp_link, edge and goal indicator
+        self.tcp_link_handle = self.gym.find_actor_rigid_body_handle(env_ptr, robotic_arm_asset, self.tcp_link_name)
+        self.edge_handle = self.gym.find_actor_rigid_body_handle(env_ptr, edge_asset, "long_edge")
+        self.goal_indicator_handle = self.gym.find_actor_rigid_body_handle(env_ptr, goal_indicator_asset, "sphere_indicator")
+        
+            
+        self.init_data()
+
+    # Configure data related to how observations are generated and control commands are applied to the robot env
+    #! Location to implement custom tactile sensor behaviour in terms of what relational measuraments are required. 
+    def init_data(self):
+        # Find handle for tcp
+
+        # Get the current rigid body transformation (position and orientation) of the tcp
+
+        # Find handle for edge
+
+        # Find handle for goal_indicator
+
+        # Define relative locations and orientations between tcp, edge and goal indicator
+
+        # Initialise tensors for global positions and orientations of the robot and edge (updated each sim step to reflect current state)
+
+        return
 
     # Mimicing functionality in ArmEmbodiment.load_urdf()
     def setup_mappings(self, robotic_arm_asset):
@@ -238,14 +301,61 @@ class EdgeFollow(VecTask):
             link_name_to_index[link_name] = i
 
         return num_dofs, link_name_to_index, joint_name_to_index
+    
+    # Reset the environments
+    def reset_idx(self, env_ids):
+        # Reset the robot's DOF positions and velocities while introducing noise
+        pos = tensor_clamp(
+            self.default_robot_rest_pose.unsqueeze(0) + 0.25 * (torch.rand((len(env_ids), self.num_robot_dofs), device=self.device) - 0.5), 
+            self.robot_dof_lower_limits, self.robot_dof_upper_limits
+            )
+        self.robot_dof_pos[env_ids, :] = pos
+        self.robot_dof_vel[env_ids, :] = torch.zeros_like(self.robot_dof_vel[env_ids])
+        self.robot_dof_targets[env_ids, :self.num_robot_dofs] = pos
 
+        # Single id per env as there is only one actor in each env
+        env_ids_int32 = env_ids.to(dtype=torch.int32)
+        self.gym.set_dof_position_target_tensor_indexed(self.sim,
+                                                        gymtorch.unwrap_tensor(self.robot_dof_targets),
+                                                        gymtorch.unwrap_tensor(env_ids_int32),
+                                                        len(env_ids_int32))
+        
+        self.gym.set_dof_state_tensor_indexed(self.sim,
+                                              gymtorch.unwrap_tensor(self.dof_state),
+                                              gymtorch.unwrap_tensor(env_ids_int32),
+                                              len(env_ids_int32))
+        
+        self.progress_buf[env_ids] = 0
+        self.reset_buf[env_ids] = 0
+        self.successes[env_ids] = 0
+    
+    #Required for Eureka
+    def compute_reward(self):
+        return
+    
+    #Required for Eureka
+    def compute_reward(self):
+        return
     
     # Required for VecTask
     def pre_physics_step(self, actions):
-        return
+        self.actions = actions.clone().to(self.device)
+        targets = self.robot_dof_targets[:, :self.num_robot_dofs] + self.robot_dof_speed_scales * self.dt * self.actions * self.action_scale
+        self.robot_dof_targets[:, :self.num_robot_dofs] = tensor_clamp(
+            targets, self.robot_dof_lower_limits, self.robot_dof_upper_limits
+        )
+        self.gym.set_dof_position_target_tensor(self.sim,
+                                                gymtorch.unwrap_tensor(self.robot_dof_targets))
     
     # Required for VecTask
     def post_physics_step(self):
+        self.progress_buf += 1
+        return
+    
+    def compute_observations(self):
         return
 
-        
+# Required for Eureka
+@torch.jit.script
+def compute_success():
+    return

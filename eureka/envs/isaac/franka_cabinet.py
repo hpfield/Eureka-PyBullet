@@ -211,12 +211,14 @@ class FrankaCabinet(VecTask):
             if self.aggregate_mode >= 3:
                 self.gym.begin_aggregate(env_ptr, max_agg_bodies, max_agg_shapes, True)
 
+            #! Load in the franka robot, place in the env and set physics properties
             franka_actor = self.gym.create_actor(env_ptr, franka_asset, franka_start_pose, "franka", i, 1, 0)
             self.gym.set_actor_dof_properties(env_ptr, franka_actor, franka_dof_props)
 
             if self.aggregate_mode == 2:
                 self.gym.begin_aggregate(env_ptr, max_agg_bodies, max_agg_shapes, True)
 
+            #! Load cabinet into env, randomise its starting position, provide physics properties
             cabinet_pose = cabinet_start_pose
             cabinet_pose.p.x += self.start_position_noise * (np.random.rand() - 0.5)
             dz = 0.5 * np.random.rand()
@@ -229,6 +231,7 @@ class FrankaCabinet(VecTask):
             if self.aggregate_mode == 1:
                 self.gym.begin_aggregate(env_ptr, max_agg_bodies, max_agg_shapes, True)
 
+            #! Setup props (in this case a bunch of cubes in the drawer)
             if self.num_props > 0:
                 self.prop_start.append(self.gym.get_sim_actor_count(self.sim))
                 drawer_handle = self.gym.find_actor_rigid_body_handle(env_ptr, cabinet_actor, "drawer_top")
@@ -258,6 +261,7 @@ class FrankaCabinet(VecTask):
                         self.default_prop_states.append([prop_state_pose.p.x, prop_state_pose.p.y, prop_state_pose.p.z,
                                                          prop_state_pose.r.x, prop_state_pose.r.y, prop_state_pose.r.z, prop_state_pose.r.w,
                                                          0, 0, 0, 0, 0, 0])
+            #! End aggregation
             if self.aggregate_mode > 0:
                 self.gym.end_aggregate(env_ptr)
 
@@ -265,6 +269,7 @@ class FrankaCabinet(VecTask):
             self.frankas.append(franka_actor)
             self.cabinets.append(cabinet_actor)
 
+        #! Save hadles and states, allowing the env to directly manipulate these actors in simulation
         self.hand_handle = self.gym.find_actor_rigid_body_handle(env_ptr, franka_actor, "panda_link7")
         self.drawer_handle = self.gym.find_actor_rigid_body_handle(env_ptr, cabinet_actor, "drawer_top")
         self.lfinger_handle = self.gym.find_actor_rigid_body_handle(env_ptr, franka_actor, "panda_leftfinger")
