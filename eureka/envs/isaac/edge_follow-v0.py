@@ -329,10 +329,7 @@ class EdgeFollow(VecTask):
         self.reset_buf[env_ids] = 0
         self.successes[env_ids] = 0
     
-    #Required for Eureka
-    def compute_reward(self):
-        return
-    
+
     #Required for Eureka
     def compute_reward(self):
         return
