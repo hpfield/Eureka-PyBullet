@@ -1,6 +1,8 @@
 import numpy as np
 import os
 import torch
+from typing import Deque # from smg_gym
+from collections import deque # from smg_gym
 
 from isaacgym import gymutil, gymtorch, gymapi
 from isaacgym.torch_utils import *
@@ -32,7 +34,8 @@ class EdgeFollow(VecTask):
         #! Custom env params
         robot_arm_params = {}
         robot_arm_params["type"] = "ur5"
-        robot_arm_params["tcp_link_name"] = "tcp_link"
+        robot_arm_params["tcp_link_name"] = "tcp_link" # Not associated with mesh file
+        robot_arm_params["tactip_tip_link_name"] = "tactip_tip_link" # Associated with mesh file
         robot_arm_params["rest_pose"] = np.array([0.0, 1.374, 0.871,  1.484, -2.758, 4.940, 2.2409, 7.165, 0.0, 0.0, 0.0, 0.0, 0.0])
         self.default_robot_rest_pose = torch.tensor(robot_arm_params["rest_pose"], dtype=torch.float, device=self.device) # Matching data conversion from FrankaCabinet
         cfg["robot_arm_params"] = robot_arm_params
@@ -46,11 +49,21 @@ class EdgeFollow(VecTask):
         else:
             self.tcp_link_name = "ee_link"
 
+        # Contact sensing configuration
+        self.enable_dof_force_sensors = cfg["env"]["enable_dof_force_sensors"]
+        self.contact_sensor_modality = cfg["env"]["contact_sensor_modality"]
+
         # Finish config
         self.cfg = cfg
+        obs_cfg = self.cfg["enabled_obs"] #! Implement observation config as in smg_gym base_hand, smg_gaiting and smg_reorient.yaml
         self.action_scale = self.cfg["env"]["actionScale"] # Taen from FrankaCabinet
 
         self.dt = 1/60 # Taken from FrankaCabinet
+
+        # Configure observation space
+        self._state_history_len = 2 # From smg_gym
+        self._tcp_joint_pos_history: Deque[torch.Tensor] = deque(maxlen=self._state_history_len)
+        self._tcp_joint_vel_history: Deque[torch.Tensor] = deque(maxlen=self._state_history_len)
 
         super().__init__(config=self.cfg, rl_device=rl_device, sim_device=sim_device, graphics_device_id=graphics_device_id, headless=headless, virtual_screen_capture=virtual_screen_capture, force_render=force_render)
 
@@ -74,6 +87,28 @@ class EdgeFollow(VecTask):
         self.num_bodies = self.rigid_body_states.shape[1]
 
         self.root_state_tensor = gymtorch.wrap_tensor(actor_root_state_tensor).view(self.num_envs, -1, 13) 
+
+        # Setup tensors for contact forces
+        self.n_env_bodies = self.gym.get_sim_rigid_body_count(self.sim) // self.num_envs
+        contact_force_tensor = self.gym.acquire_net_contact_force_tensor(self.sim)
+
+        if self.enable_dof_force_sensors:
+            dof_force_tensor = self.gym.acquire_dof_force_tensor(self.sim)
+
+        if self.contact_sensor_modality == 'ft_sensor':
+            force_sensor_tensor = self.gym.acquire_force_sensor_tensor(self.sim)
+
+        #! Create Views for contact data
+        self.contact_force_tensor = gymtorch.wrap_tensor(contact_force_tensor).view(self.num_envs, self.n_env_bodies, 3)
+
+        if self.contact_sensor_modality == 'ft_sensor':
+            self.force_sensor_tensor = gymtorch.wrap_tensor(force_sensor_tensor).view(
+                self.num_envs, 1, 6 # 1 because one sensor, 6 because Wrench dims are 3D for force and 3D for torque
+            )
+        else:
+            self.force_sensor_tensor = torch.zeros(
+                size=(self.num_envs, 1, 6)
+            )
 
         # Calculate and store metrics and constants that are necessary for the operation
         self.num_dofs = self.gym.get_sim_dof_count(self.sim) // self.num_envs
@@ -255,7 +290,12 @@ class EdgeFollow(VecTask):
         self.tcp_link_handle = self.gym.find_actor_rigid_body_handle(env_ptr, robotic_arm_asset, self.tcp_link_name)
         self.edge_handle = self.gym.find_actor_rigid_body_handle(env_ptr, edge_asset, "long_edge")
         self.goal_indicator_handle = self.gym.find_actor_rigid_body_handle(env_ptr, goal_indicator_asset, "sphere_indicator")
+
+        #! Setup self variables for _setup_contact_tracking
+        self.robotic_arm_asset = robotic_arm_asset
         
+        self._setup_tip_tracking()
+        self._setup_contact_tracking()
             
         self.init_data()
 
@@ -349,8 +389,62 @@ class EdgeFollow(VecTask):
         self.progress_buf += 1
         return
     
-    def compute_observations(self):
+    # From smg_gym: The tcp's are tcp links and are not associated with mesh files (in smg_gym)
+    def _setup_tip_tracking(self):
+        robot_body_names = self.gym.get_asset_rigid_body_names(self.robotic_arm_asset)
+        tcp_body_names = [name for name in robot_body_names if self.cfg["robot_arm_params"]["tcp_link_name"] in name]
+        self.tcp_body_idxs = [
+            self.gym.find_asset_rigid_body_index(self.hand_asset, name) for name in tcp_body_names
+        ]
         return
+    
+    def _setup_contact_tracking(self):
+        robot_body_names = self.gym.get_asset_rigid_body_names(self.robotic_arm_asset)
+        tip_body_names = [name for name in robot_body_names if self.cfg["robot_arm_params"]["tactip_tip_link_name"] in name]
+        non_tip_body_names = [name for name in robot_body_names if self.cfg["robot_arm_params"]["tactip_tip_link_name"] not in name]
+        self.tip_body_idxs = [
+            self.gym.find_asset_rigid_body_index(self.robotic_arm_asset, name) for name in tip_body_names
+        ]
+        self.non_tip_body_idxs = [
+            self.gym.find_asset_rigid_body_index(self.robotic_arm_asset, name) for name in non_tip_body_names
+        ]
+        self.n_tips = 1
+        self.n_non_tip_links = len(self.non_tip_body_idxs)
+
+        # Add ft sensor to tactip
+        if self.contact_sensor_modality == 'ft_sensor':
+            sensor_pose = gymapi.Transform()
+            for idx in self.tip_body_idxs:
+                sensor_options = gymapi.ForceSensorProperties()
+                sensor_options.enable_forward_dynamics_forces = False
+                sensor_options.enable_constraint_solver_forces = True
+                sensor_options.use_world_frame = True
+                self.gym.create_asset_force_sensor(self.robotic_arm_asset, idx, sensor_pose, sensor_options)
+        # No rich contacts
+        return
+    
+    def compute_observations(self):
+        # Obtain tactip contact information
+        self.net_tip_contact_forces = self.contact_force_tensor[:, self.tip_body_idxs, :]
+        self.n_tip_contacts = torch.where(
+            torch.count_nonzero(self.net_tip_contact_forces, dim=2) > 0,
+            torch.ones(size=(self.num_envs, self.n_tips), device=self.sim_device),
+            torch.zeros(size=(self.num_envs, self.n_tips), device=self.sim_device)
+        )
+        self.n_tip_contacts = torch.sum(self.n_tip_contacts, dim=1)
+        
+        # Obtain tactip state
+        tip_states = self.rigid_body_states[:, self.tcp_body_idxs, :]
+
+        # Get start position?
+
+        # Get goal position
+
+        # Get edge position?
+
+        # Append observations to history stack
+        self._tcp_joint_pos_history.appendleft(self.tcp_joint_pos.clone())
+        self._tcp_joint_vel_history.appendleft(self.tcp_joint_vel.clone())
 
 # Required for Eureka
 @torch.jit.script
