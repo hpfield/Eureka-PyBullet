@@ -3,6 +3,7 @@ import os
 import torch
 from typing import Deque # from smg_gym
 from collections import deque # from smg_gym
+from isaacgym.torch_utils import quat_unit # from smg_gym
 
 from isaacgym import gymutil, gymtorch, gymapi
 from isaacgym.torch_utils import *
@@ -98,7 +99,7 @@ class EdgeFollow(VecTask):
         if self.contact_sensor_modality == 'ft_sensor':
             force_sensor_tensor = self.gym.acquire_force_sensor_tensor(self.sim)
 
-        #! Create Views for contact data
+        # Create Views for contact data
         self.contact_force_tensor = gymtorch.wrap_tensor(contact_force_tensor).view(self.num_envs, self.n_env_bodies, 3)
 
         if self.contact_sensor_modality == 'ft_sensor':
@@ -423,6 +424,13 @@ class EdgeFollow(VecTask):
         # No rich contacts
         return
     
+    # From smg_gym
+    def canonicalise_quat(self, quat):
+        canon_quat = quat_unit(quat)
+        canon_quat[torch.where(canon_quat[..., 3] < 0)] *= -1
+        return canon_quat
+    
+    # Using info from smg_gym
     def compute_observations(self):
         # Obtain tactip contact information
         self.net_tip_contact_forces = self.contact_force_tensor[:, self.tip_body_idxs, :]
@@ -435,10 +443,17 @@ class EdgeFollow(VecTask):
         
         # Obtain tactip state
         tip_states = self.rigid_body_states[:, self.tcp_body_idxs, :]
+        self.tip_pos = tip_states[..., 0:3].reshape(self.num_envs, 3) # 3 represents x,y,z coordinates of tip
+        self.tip_orn = self.canonicalise_quat(tip_states[..., 3:7])
+        self.tip_linvel = tip_states[..., 7:10]
+        self.tip_angvel = tip_states[..., 10:13]
 
         # Get start position?
 
         # Get goal position
+        #! In order to understand whether the observations are being obtained correctly, I will \
+        #! need to run the simulation and print out variables like the contact_force_tensor to \
+        #! assess their contents. Not worth progressing until using appropriate machine.
 
         # Get edge position?
 
